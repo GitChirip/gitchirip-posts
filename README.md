@@ -1,2 +1,2 @@
 # gitchirip-posts
-The most distributed microblogging experi
+The most distributed microblogging experience
