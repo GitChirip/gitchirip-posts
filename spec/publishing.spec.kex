@@ -1,0 +1,57 @@
+using GitChirip.Publishing, only: [Commit, PullRequest, problems]
+
+let chirp(text: String) -> PullRequest = PullRequest {
+  author: "alice", base: "main", draft?: false, changedFiles: 0,
+  commits: [Commit { author: "alice", message: text, parents: 1 }]
+}
+
+describe "GitChirip.Publishing.problems" do
+  it "accepts one short empty commit by the opener" do
+    assert(problems(chirp("hello world")).empty?)
+  end
+
+  it "accepts exactly 280 characters" do
+    assert(problems(chirp((1..280).map { |_| "é" }.join(""))).empty?)
+  end
+
+  it "refuses 281 characters" do
+    assert(problems(chirp((1..281).map { |_| "a" }.join(""))).count == 1)
+  end
+
+  it "refuses a commit that changes files" do
+    let pull = chirp("hi")
+    assert(problems(PullRequest { ...pull, changedFiles: 2 }).count == 1)
+  end
+
+  it "refuses more than one commit" do
+    let pull = chirp("hi")
+    let extra = Commit { author: "alice", message: "again", parents: 1 }
+    assert(problems(PullRequest { ...pull, commits: [extra, ...pull.commits] }).count == 1)
+  end
+
+  it "refuses a commit by someone other than the opener" do
+    let pull = chirp("hi")
+    let forged = Commit { author: "mallory", message: "hi", parents: 1 }
+    assert(problems(PullRequest { ...pull, commits: [forged] }).count == 1)
+  end
+
+  it "refuses a commit GitHub cannot attribute" do
+    let pull = chirp("hi")
+    let unknown = Commit { author: "", message: "hi", parents: 1 }
+    assert(problems(PullRequest { ...pull, commits: [unknown] }).count == 1)
+  end
+
+  it "refuses an empty message once trailers are taken off" do
+    assert(problems(chirp("In-Reply-To: abc1234")).count == 1)
+  end
+
+  it "refuses a reply to a chirp that is not on main" do
+    let pull = chirp("me too\n\nIn-Reply-To: abc1234")
+    assert(problems(PullRequest { ...pull, replyKnown?: false }).count == 1)
+  end
+
+  it "refuses another base branch and drafts" do
+    let pull = chirp("hi")
+    assert(problems(PullRequest { ...pull, base: "dev", draft?: true }).count == 2)
+  end
+end

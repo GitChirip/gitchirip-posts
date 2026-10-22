@@ -1,0 +1,24 @@
+---
+params: [count: Integer, cards: String, older: String]
+---
+<header class="bar tabs">
+  <a class="tab active" href="#">Latest</a>
+  <span class="tab muted"><%= count %> chirps</span>
+</header>
+<section class="compose" id="compose">
+  <div class="avatar ghost"></div>
+  <form onsubmit="return false">
+    <textarea id="draft" rows="2" maxlength="280" placeholder="What's happening?"></textarea>
+    <p class="command">Chirps are posted from git: <code id="command">git chirp "…"</code></p>
+    <div class="compose-bar">
+      <span class="counter" id="counter">280</span>
+      <button class="pill accent" type="button" id="copy">Copy command</button>
+    </div>
+  </form>
+</section>
+<section class="feed">
+<%== cards %>
+</section>
+<% if !older.empty? %>
+<a class="older" href="<%= older %>">Show older chirps</a>
+<% end %>

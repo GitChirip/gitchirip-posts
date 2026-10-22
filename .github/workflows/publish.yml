@@ -1,0 +1,37 @@
+# Publishing is merging. Every pull request gets checked by `tey publish`,
+# which merges a valid chirp and explains what is wrong with anything else.
+name: Publish
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write       # merge
+  pull-requests: write  # comment
+  actions: write        # start the site build after a merge
+
+# One merge at a time, in the order the pull requests came in.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # A maintainer's pull request that changes files is code, not a chirp.
+    if: >-
+      github.event.pull_request.changed_files == 0 ||
+      !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    container: ghcr.io/kexhq/kex:0.4.0-rc.2
+    steps:
+      - name: Install git and the GitHub CLI
+        run: apt-get update && apt-get install -y --no-install-recommends git gh
+      # pull_request_target checks out main, never the pull request: nothing
+      # from a contributor's branch is run, only read through the API.
+      - uses: actions/checkout@v4
+      - name: Check and merge
+        run: tey publish --repository "$GITHUB_REPOSITORY" --pull "$PULL"
+        env:
+          PULL: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

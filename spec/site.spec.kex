@@ -1,0 +1,41 @@
+using GitChirip.Site, only: [Settings, linkify]
+
+let settings = Settings { repository: "GitChirip/gitchirip-posts" }
+
+describe "GitChirip.Site.linkify" do
+  it "escapes markup" do
+    assert(linkify("<b>hi</b> & bye", settings, []) == "&lt;b&gt;hi&lt;/b&gt; &amp; bye")
+  end
+
+  it "links a mention of someone with a profile here to that profile" do
+    assert(linkify("hi @octocat", settings, ["octocat"]) == "hi <a href=\"/@octocat/\">@octocat</a>")
+  end
+
+  it "links a mention of anyone else to GitHub" do
+    assert(linkify("@hubot", settings, []) == "<a href=\"https://github.com/hubot\">@hubot</a>")
+  end
+
+  it "puts the base path in front of profile links" do
+    let served = Settings { ...settings, base: "/posts" }
+    assert(linkify("@a", served, ["a"]) == "<a href=\"/posts/@a/\">@a</a>")
+  end
+
+  it "makes addresses live without letting a quote out of the attribute" do
+    let html = linkify("see https://example.com/?q=\"><script>", settings, [])
+    assert(html == "see <a href=\"https://example.com/?q=\" rel=\"nofollow noopener\">https://example.com/?q=</a>&quot;&gt;&lt;script&gt;")
+  end
+end
+
+describe "GitChirip.Site paging" do
+  it "counts whole and partial pages" do
+    assert(GitChirip.Site.pageCount(0) == 0)
+    assert(GitChirip.Site.pageCount(100) == 1)
+    assert(GitChirip.Site.pageCount(101) == 2)
+  end
+
+  it "continues after the newest hundred on the page holding the next older chirp" do
+    assert(GitChirip.Site.olderThanNewest(100) == None)
+    assert(GitChirip.Site.olderThanNewest(101) == Just(1))
+    assert(GitChirip.Site.olderThanNewest(250) == Just(2))
+  end
+end

@@ -1,0 +1,80 @@
+# The rules a pull request has to pass before merging it publishes a chirp.
+#
+# A chirp pull request carries exactly one commit, by the person who opened
+# it, that changes no file and says something short. +problems+ is pure: the
+# publish command gathers the facts from GitHub and hands them over, so the
+# rules can be tested without a network.
+module GitChirip.Publishing
+using GitChirip.Timeline, only: [message]
+
+# The longest chirp, counted in what a reader sees as characters.
+let MaximumLength = 280
+
+# One commit of a pull request, as GitHub reports it.
+record Commit do
+  # The GitHub account the commit's author email belongs to, or "" when
+  # GitHub could not match it to one.
+  author  : String
+  message : String
+  parents : Integer
+end
+
+# What GitHub knows about a pull request.
+record PullRequest do
+  author       : String
+  base         : String
+  draft?       : Bool
+  changedFiles : Integer
+  commits      : [Commit]
+  # Whether the chirp it replies to, if any, is on +main+ already.
+  replyKnown?  : Bool = true
+end
+
+# Everything that stops +pull+ from being published, in words for the
+# comment that tells its author; empty when it can be merged.
+#
+# @param pull [PullRequest] the facts about the pull request
+# @return [[String]] the problems, or none
+#
+# @example
+#   problems(PullRequest { author: "alice", base: "main", draft?: false,
+#     changedFiles: 0, commits: [Commit { author: "alice", message: "hi", parents: 1 }] })
+#   # => []
+problems : PullRequest -> [String]
+let problems(pull) do
+  let shape = [
+    (pull.base != "main", "it has to be opened against `main`, not `${pull.base}`"),
+    (pull.draft?, "it is still a draft"),
+    (pull.changedFiles > 0, "a chirp is an empty commit, but this changes ${pull.changedFiles} file(s)"),
+    (pull.commits.count != 1, "a chirp pull request carries exactly one commit, not ${pull.commits.count}")
+  ]
+  let found = shape.flatMap(~failure)
+  match pull.commits do
+    [commit] => [...found, ...commitProblems(pull, commit)]
+    _ => found
+  end
+end
+
+private do
+  let commitProblems(pull: PullRequest, commit: Commit) -> [String] do
+    let (text, inReplyTo) = message(commit.message)
+    let length = text.graphemeCount
+    let checks = [
+      (commit.parents != 1, "the commit cannot be a merge"),
+      (commit.author != pull.author, authorship(pull.author, commit.author)),
+      (text.empty?, "the chirp says nothing"),
+      (length > MaximumLength, "the chirp is ${length} characters long; the most is ${MaximumLength}"),
+      (inReplyTo.set? && !pull.replyKnown?, "it replies to ${inReplyTo.or("")}, which is not on `main`")
+    ]
+    checks.flatMap(~failure)
+  end
+
+  failure : (Bool, String) -> [String]
+  let failure((true, reason)) = [reason]
+  let failure((false, _))     = []
+
+  let authorship(opener: String, author: String) -> String do
+    return "GitHub cannot tell who wrote the commit; commit with the email of @${opener}" if author.empty?
+    "the commit is by @${author}, but @${opener} opened the pull request"
+  end
+end

@@ -1,0 +1,46 @@
+---
+params: [profile: Profile, website: String, count: Integer, since: String, base: String, cards: String, older: String]
+---
+<header class="bar">
+  <a class="back" href="<%= base %>/" title="Back">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12H5M11 5.5 4.5 12l6.5 6.5" /></svg>
+  </a>
+  <div>
+    <h1><%= profile.displayName %></h1>
+    <p class="sub"><%= count %> chirps</p>
+  </div>
+</header>
+<section class="profile">
+  <div class="banner"></div>
+  <div class="identity">
+    <img class="avatar large" src="<%= profile.avatar %>" alt="" width="134" height="134">
+    <a class="pill outline" href="<%= profile.url %>">Follow</a>
+  </div>
+  <h2><%= profile.displayName %></h2>
+  <p class="handle">@<%= profile.login %></p>
+  <% if !profile.bio.empty? %>
+  <p class="bio"><%= profile.bio %></p>
+  <% end %>
+  <p class="meta">
+    <% if !profile.location.empty? %>
+    <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0 1 13 0c0 5-6.5 11-6.5 11z" /><circle cx="12" cy="10" r="2.3" /></svg><%= profile.location %></span>
+    <% end %>
+    <% if !website.empty? %>
+    <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1" /></svg><a href="<%= website %>" rel="nofollow noopener"><%= profile.blog %></a></span>
+    <% end %>
+    <span><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2" /><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4" /></svg>Chirping since <time datetime="<%= since %>" data-format="month"><%= since.take(7) %></time></span>
+  </p>
+  <p class="counts">
+    <a href="<%= profile.url %>?tab=following"><strong><%= profile.following %></strong> Following</a>
+    <a href="<%= profile.url %>?tab=followers"><strong><%= profile.followers %></strong> Followers</a>
+  </p>
+  <nav class="tabs">
+    <span class="tab active">Chirps</span>
+  </nav>
+</section>
+<section class="feed">
+<%== cards %>
+</section>
+<% if !older.empty? %>
+<a class="older" href="<%= older %>">Show older chirps</a>
+<% end %>

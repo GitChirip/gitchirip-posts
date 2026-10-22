@@ -1,0 +1,9 @@
+package "gitchirip" do
+  version("0.1.0")
+  description("A microblog where chirps are empty commits and publishing is a merge")
+  kex(">= 0.4.0-rc.2")
+
+  command("site", run: "src/site.kex", description: "Build the static site from a timeline checkout")
+  command("publish", run: "src/publish.kex", description: "Check a chirp pull request and merge it")
+  command("demo", run: "sh script/demo-timeline.sh _demo", description: "Make a demo timeline in _demo/")
+end

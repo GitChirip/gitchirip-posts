@@ -1,0 +1,70 @@
+# Builds the GitChirip site from a checkout of the timeline.
+#
+#   tey site                                   # this checkout, into _site/
+#   tey site --timeline ../posts --out public  # another checkout, elsewhere
+#   tey site --offline                         # no GitHub: logins, no likes
+#   tey site --base /gitchirip-posts           # served under a path
+#
+# The output is plain files: serve the directory with anything.
+using GitChirip.GitHub, only: [Profile, profile, reactions]
+using GitChirip.Site, only: [Network, Settings, render]
+using GitChirip.Timeline, only: [read]
+
+main(args) do
+  let timeline = option(args, "--timeline").or(".")
+  let out = option(args, "--out").or("_site")
+  let offline = args.contains?("--offline")
+  let settings = Settings {
+    base: option(args, "--base").or("").trim,
+    repository: option(args, "--repository").or("GitChirip/gitchirip-posts")
+  }
+  let chirps = read(timeline).try
+  let logins = chirps.map(&.login).uniq
+  let profiles = logins.reduce({}) { |found, login| found.put(login, lookUp(login, offline)) }
+  let likes = offline then {} else reactions(settings.repository)
+  let pages = render(Network { chirps: chirps, profiles: profiles, likes: likes }, settings)
+  pages.each { |entry| write(out, entry).try }
+  copyAssets(out).try
+  IO.printLine("${chirps.count} chirps by ${logins.count} people, ${pages.count} pages in ${out}/")
+rescue |error|
+  IO.printError("site: ${error}")
+  System.exit(1)
+end
+
+# The value after +name+ on the command line, if it was given.
+option : [String] -> String -> String?
+let option(args, name) = args.findIndex { |arg| arg == name }.flatMap { |index| args.get(index + 1) }
+
+lookUp : String -> Bool -> Profile
+foul lookUp(login, offline) = offline then Profile { login: login } else profile(login)
+
+write : String -> (String, String) -> Void or! String
+foul write(out, (path, html)) do
+  let target = FS.Path.join(out, path)
+  return Error("cannot create ${FS.Path.dirname(target)}") if !makeDirectory(FS.Path.dirname(target))
+  match FS.File.write(target, html) do
+    Ok(_) => Ok(Void)
+    Error(error) => Error("cannot write ${target}: ${error}")
+  end
+end
+
+copyAssets : String -> Void or! String
+foul copyAssets(out) do
+  let assets = FS.Path.join(out, "assets")
+  return Error("cannot create ${assets}") if !makeDirectory(assets)
+  ["style.css", "chirp.js"].each do |name|
+    let from = FS.Path.join("assets", name)
+    return Error("cannot copy ${from}") if !FS.File.copy(from, FS.Path.join(assets, name))
+  end
+  # GitHub Pages would otherwise run the files through Jekyll.
+  FS.File.write(FS.Path.join(out, ".nojekyll"), "").try
+  Ok(Void)
+end
+
+# Creates +path+ and every directory above it that is missing, and answers
+# whether +path+ is there now.
+makeDirectory : String -> Bool
+foul makeDirectory(path) do
+  return true if path.empty? || FS.Directory.exists?(path)
+  makeDirectory(FS.Path.dirname(path)) && FS.Directory.create(path)
+end

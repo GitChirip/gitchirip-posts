@@ -1,0 +1,103 @@
+# Checks a chirp pull request and, when it passes, publishes it by merging.
+#
+#   tey publish --repository GitChirip/gitchirip-posts --pull 42
+#   tey publish --repository GitChirip/gitchirip-posts --pull 42 --dry-run
+#
+# A pull request that fails gets a comment saying why, and stays open so its
+# author can fix it and push again. The merge is a real merge commit: a
+# squash or a rebase would rewrite the chirp's SHA, which is its identity.
+using GitChirip.Publishing, only: [Commit, PullRequest, problems]
+using GitChirip.Timeline, as: Timeline
+using JSON
+
+main(args) do
+  let repository = option(args, "--repository").or("")
+  let number = option(args, "--pull").or("")
+  let dryRun = args.contains?("--dry-run")
+  if repository.empty? || number.empty?
+    IO.printError("usage: publish --repository OWNER/NAME --pull NUMBER [--dry-run]")
+    System.exit(2)
+  end
+  let pull = pullRequest(repository, number).try
+  let found = problems(pull)
+  if found.empty?
+    IO.printLine("#${number} by @${pull.author} passes")
+    publish(repository, number).try if !dryRun
+  else
+    found.each { |problem| IO.printLine("#${number}: ${problem}") }
+    refuse(repository, number, found).try if !dryRun
+    System.exit(1)
+  end
+rescue |error|
+  IO.printError("publish: ${error}")
+  System.exit(1)
+end
+
+# The value after +name+ on the command line, if it was given.
+option : [String] -> String -> String?
+let option(args, name) = args.findIndex { |arg| arg == name }.flatMap { |index| args.get(index + 1) }
+
+# Gathers what GitHub knows about the pull request.
+pullRequest : String -> String -> PullRequest or! String
+foul pullRequest(repository, number) do
+  let pullFields = `{author: .user.login, base: .base.ref, draft: .draft, changedFiles: .changed_files}`
+  let commitFields = `[.[] | {author: (.author.login // ""), message: .commit.message, parents: (.parents | length)}]`
+  let pull = json(gh(["api", "repos/${repository}/pulls/${number}", "--jq", pullFields]).try).try
+  let listed = json(gh(["api", "repos/${repository}/pulls/${number}/commits", "--jq", commitFields]).try).try
+  let commits = listed.map { |c| Commit { author: c.get("author").or(""), message: c.get("message").or(""), parents: c.get("parents").or(0) } }
+  Ok(PullRequest {
+    author: pull.get("author").or(""),
+    base: pull.get("base").or(""),
+    draft?: pull.get("draft").or(false),
+    changedFiles: pull.get("changedFiles").or(0),
+    commits: commits,
+    replyKnown?: replyKnown(repository, commits)
+  })
+end
+
+# Whether the chirp a reply answers is already published. Asking GitHub to
+# compare it with +main+ answers "behind" or "identical" exactly when +main+
+# contains it.
+replyKnown : String -> [Commit] -> Bool
+foul replyKnown(repository, commits) do
+  let (_, inReplyTo) = Timeline.message(commits.first.map { |commit| commit.message }.or(""))
+  match inReplyTo do
+    Just(sha) => match gh(["api", "repos/${repository}/compare/main...${sha}", "--jq", ".status"]) do
+      Ok(status) => ["behind", "identical"].contains?(status.trim)
+      Error(_) => false
+    end
+    None => true
+  end
+end
+
+publish : String -> String -> Void or! String
+foul publish(repository, number) do
+  gh(["pr", "merge", number, "--repo", repository, "--merge"]).try
+  IO.printLine("#${number} published")
+  # The merge was made with the workflow's own token, which GitHub does not
+  # let set off another workflow by pushing; asking for the build directly
+  # is the one way it allows.
+  gh(["workflow", "run", "site.yml", "--repo", repository]).try
+  Ok(Void)
+end
+
+refuse : String -> String -> [String] -> Void or! String
+foul refuse(repository, number, found) do
+  let reasons = found.map { |problem| "- ${problem}" }.join("\n")
+  let body = "This can't be published yet:\n\n${reasons}\n\nPush a fixed commit to this branch and I'll look again."
+  gh(["pr", "comment", number, "--repo", repository, "--body", body]).try
+  Ok(Void)
+end
+
+json : String -> Any or! String
+let json(text) = match JSON.parse(text) do
+  Ok(value) => Ok(value)
+  Error(error) => Error("unreadable answer from GitHub: ${error}")
+end
+
+gh : [String] -> String or! String
+foul gh(args) do
+  let result = Process.run("gh", args).try
+  return Error("gh ${args.take(2).join(" ")}: ${result.stderr.trim}") if result.exitCode != 0
+  Ok(result.stdout)
+end

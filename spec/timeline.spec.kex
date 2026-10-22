@@ -1,0 +1,25 @@
+using GitChirip.Timeline, only: [message, parsePublications, pullRequest]
+
+describe "GitChirip.Timeline" do
+  it "reads the number and login out of GitHub's merge subject" do
+    assert(pullRequest("Merge pull request #42 from alice/hello") == Just((42, "alice")))
+  end
+
+  it "ignores merges GitHub's button did not write" do
+    assert(pullRequest("Merge branch 'main' into dev") == None)
+    assert(pullRequest("Merge pull request #x from alice/hello") == None)
+  end
+
+  it "separates the text from an In-Reply-To trailer" do
+    assert(message("me too\n\nIn-Reply-To: abc1234\n") == ("me too", Just("abc1234")))
+    assert(message("  just text \n") == ("just text", None))
+  end
+
+  it "keeps the merges that changed no file" do
+    let chirp = "\u{1e}m1\u{1f}p1 c1\u{1f}2026-10-01T10:00:00Z\u{1f}Merge pull request #1 from alice/a\n"
+    let code = "\u{1e}m2\u{1f}p2 c2\u{1f}2026-10-02T10:00:00Z\u{1f}Merge pull request #2 from bob/b\n\nREADME.md\n"
+    let found = parsePublications("${code}${chirp}")
+    assert(found.map(&.number) == [1])
+    assert(found.map(&.sha) == ["c1"])
+  end
+end

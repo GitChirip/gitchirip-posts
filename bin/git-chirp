@@ -1,0 +1,86 @@
+#!/bin/sh
+# git chirp: post to GitChirip from a clone of your fork.
+#
+#   git chirp "hello world"              post a chirp
+#   git chirp reply <sha> "me too"       reply to a chirp
+#   git chirp timeline [count]           read the timeline in the terminal
+#   git chirp help                       show this
+#
+# A chirp is an empty commit on top of the timeline's main branch. It is
+# made with plumbing, so your checkout and working tree are never touched,
+# pushed to a branch of your fork, and offered to the timeline as a pull
+# request. The bot merges it if it passes, and merging is publishing.
+#
+# Put this file on your PATH and git finds it as `git chirp`. Posting needs
+# the GitHub CLI (`gh`), signed in as you.
+set -eu
+
+UPSTREAM=${GITCHIRIP_REMOTE:-upstream}
+
+die() {
+  echo "git chirp: $*" >&2
+  exit 1
+}
+
+# owner/name of the timeline, from the upstream remote's URL.
+timeline() {
+  url=$(git remote get-url "$UPSTREAM" 2>/dev/null) ||
+    die "no '$UPSTREAM' remote; add the timeline with: git remote add $UPSTREAM https://github.com/GitChirip/gitchirip-posts"
+  echo "$url" | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##'
+}
+
+post() {
+  text=$1
+  shift
+  [ -n "$(printf '%s' "$text" | tr -d '[:space:]')" ] || die "a chirp has to say something"
+  length=$(printf '%s' "$text" | wc -m | tr -d ' ')
+  [ "$length" -le 280 ] || die "that is $length characters; the most is 280"
+  command -v gh > /dev/null || die "posting needs the GitHub CLI: https://cli.github.com"
+
+  repository=$(timeline)
+  login=$(gh api user --jq .login) || die "sign in first: gh auth login"
+  git fetch --quiet "$UPSTREAM" main
+  base=$(git rev-parse "$UPSTREAM/main")
+
+  # The tree of main itself, unchanged: that is what makes the commit empty.
+  sha=$(git commit-tree "$base^{tree}" -p "$base" -m "$text" "$@")
+  branch="chirp-$(date +%s)"
+  git push --quiet origin "$sha:refs/heads/$branch"
+
+  title=$(printf '%s' "$text" | head -n 1 | cut -c 1-72)
+  gh pr create --repo "$repository" --base main --head "$login:$branch" --title "$title" --body "A chirp, posted with git chirp." > /dev/null
+  echo "chirped $(git rev-parse --short "$sha"); it is published once the pull request is merged"
+}
+
+show() {
+  count=${1:-20}
+  git fetch --quiet "$UPSTREAM" main
+  # Each chirp is the second parent of a merge on main that changed no file.
+  git log "$UPSTREAM/main" --first-parent --merges --diff-merges=first-parent --name-only \
+    --format='%x1e%P%x1f%s' -n "$count" |
+    awk -v RS='\036' -F '\037' 'NF == 2 && $2 !~ /\n./ { split($1, p, " "); sub(/\n+$/, "", $2); print p[2], $2 }' |
+    while read -r sha subject; do
+      login=$(echo "$subject" | sed -nE 's#^Merge pull request \#[0-9]+ from ([^/]+)/.*#\1#p')
+      [ -n "$login" ] || continue
+      git log -1 --format="%C(bold)@$login%C(reset) %C(dim)· %ar · %h%C(reset)%n%w(0,2,2)%B" "$sha" |
+        grep -v '^  In-Reply-To:'
+    done
+}
+
+case "${1:-}" in
+  "" | -h | --help | help)
+    sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  reply)
+    [ $# -eq 3 ] || die "usage: git chirp reply <sha> \"text\""
+    full=$(git rev-parse --verify --quiet "$2^{commit}") || die "no chirp $2 here; try git fetch $UPSTREAM"
+    post "$3" -m "In-Reply-To: $full"
+    ;;
+  timeline)
+    show "${2:-20}"
+    ;;
+  *)
+    [ $# -eq 1 ] || die "quote the chirp: git chirp \"hello world\""
+    post "$1"
+    ;;
+esac

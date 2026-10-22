@@ -1,0 +1,126 @@
+# What the site borrows from GitHub: people's profiles, and the reactions on
+# the pull requests that published their chirps, which are the chirps' likes.
+#
+# Everything goes through the +gh+ command, so the build runs with whatever
+# token +gh+ has: +GH_TOKEN+ in a workflow, the user's login on a laptop.
+# A failed lookup is never fatal. A profile falls back to the bare login, and
+# a chirp nobody could count likes for shows none.
+module GitChirip.GitHub
+using JSON
+
+# A GitHub user, as much of them as a profile page shows.
+record Profile do
+  login     : String
+  name      : String = ""
+  bio       : String = ""
+  location  : String = ""
+  blog      : String = ""
+  followers : Integer = 0
+  following : Integer = 0
+end
+
+make Profile do
+  # The name to show: the profile's name, or the login when there is none.
+  #
+  # @return [String] the display name
+  displayName :> String
+  let displayName = @name.empty? then @login else @name
+
+  # The address of the user's avatar, which GitHub serves for any login.
+  #
+  # @return [String] the avatar's URL
+  avatar :> String
+  let avatar = "https://github.com/${@login}.png?size=96"
+
+  # The user's page on GitHub.
+  #
+  # @return [String] the profile's URL
+  url :> String
+  let url = "https://github.com/${@login}"
+
+  # The profile's website as a link target, with a scheme when the user left
+  # it out, or +None+ when there is none.
+  #
+  # @return [String?] the website's URL
+  website :> String?
+  let website do
+    return None if @blog.empty?
+    Just(@blog.startsWith?("http://") || @blog.startsWith?("https://") then @blog else "https://${@blog}")
+  end
+end
+
+# Looks up +login+'s GitHub profile.
+#
+# @param login [String] the GitHub login
+# @return [Profile] the profile, or one holding only the login when the
+#   lookup failed
+profile : String -> Profile
+foul profile(login) do
+  let fields = `{name: (.name // ""), bio: (.bio // ""), location: (.location // ""), blog: (.blog // ""), followers, following}`
+  match gh(["api", "users/${login}", "--jq", fields]).flatMap(~parsed) do
+    Ok(user) => Profile {
+      login: login,
+      name: user.get("name").or(""),
+      bio: user.get("bio").or(""),
+      location: user.get("location").or(""),
+      blog: user.get("blog").or(""),
+      followers: user.get("followers").or(0),
+      following: user.get("following").or(0)
+    }
+    Error(reason) => do
+      IO.printError("profile of ${login}: ${reason}")
+      Profile { login: login }
+    end
+  end
+end
+
+# Counts the reactions on every merged pull request of +repository+.
+#
+# @param repository [String] the timeline's +owner/name+ on GitHub
+# @return [{Integer: Integer}] reactions by pull request number; empty when
+#   they could not be fetched
+reactions : String -> {Integer: Integer}
+foul reactions(repository) do
+  let query = `.[] | select(.pull_request) | "\(.number) \(.reactions.total_count)"`
+  let path = "repos/${repository}/issues?state=closed&per_page=100"
+  match gh(["api", "--paginate", path, "--jq", query]) do
+    Ok(output) => counts(output)
+    Error(reason) => do
+      IO.printError("reactions of ${repository}: ${reason}")
+      {}
+    end
+  end
+end
+
+# Reads the +number count+ lines +reactions+ asks +gh+ for.
+#
+# @param output [String] one pull request per line
+# @return [{Integer: Integer}] reactions by pull request number
+#
+# @example
+#   counts("8 3\n7 0\n")   # => { 8: 3, 7: 0 }
+counts : String -> {Integer: Integer}
+let counts(output) = output.lines.reduce({}, ~tally)
+
+private do
+  let parsed(output: String) -> {String: Any} or! String = match JSON.parse(output) do
+    Ok(value) => Ok(value)
+    Error(error) => Error("unreadable profile: ${error}")
+  end
+
+  let tally(found: {Integer: Integer}, line: String) -> {Integer: Integer} do
+    match line.trim.split(" ") do
+      [number, count] => match (Integer.parse(number), Integer.parse(count)) do
+        (Ok(n), Ok(c)) => found.put(n, c)
+        _ => found
+      end
+      _ => found
+    end
+  end
+
+  foul gh(args: [String]) -> String or! String do
+    let result = Process.run("gh", args).try
+    return Error(result.stderr.trim) if result.exitCode != 0
+    Ok(result.stdout)
+  end
+end

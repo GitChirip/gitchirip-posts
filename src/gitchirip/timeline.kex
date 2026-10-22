@@ -1,0 +1,150 @@
+# The timeline, read out of git: every chirp a pull request published.
+#
+# A chirp is an empty commit, and it is published by merging the pull request
+# that carries it into +main+. The timeline is therefore +main+'s first-parent
+# history, kept to the merges that changed no file: a maintainer's pull
+# request that touches the code merges the same way, but it is not a chirp.
+#
+#   let chirps = GitChirip.Timeline.read(".").try
+#   chirps.first.map(&.text)   # => Just("just setting up my chirp")
+module GitChirip.Timeline
+
+# One published chirp.
+record Chirp do
+  # The pull request that published it, which is also its permalink.
+  number      : Integer
+  sha         : String
+  # The GitHub login of whoever opened that pull request.
+  login       : String
+  text        : String
+  # When the author made the commit; whatever their clock said.
+  writtenAt   : String
+  # When the merge happened, by the bot's clock rather than the author's.
+  publishedAt : String
+  # The SHA of the chirp this one answers, from an +In-Reply-To:+ trailer.
+  inReplyTo   : String? = None
+end
+
+# One merge on +main+ that published a chirp, before its text is read.
+record Publication do
+  number      : Integer
+  login       : String
+  sha         : String
+  publishedAt : String
+end
+
+# Reads every chirp published in the repository at +path+, newest first.
+#
+# @param path [String] a checkout of the timeline repository
+# @return [[Chirp] or! String] the chirps, or what git said when it failed
+read : String -> [Chirp] or! String
+foul read(path) do
+  let merges = git(path, [
+    "log", "--first-parent", "--merges", "--diff-merges=first-parent",
+    "--name-only", "--format=${RecordSeparator}%H${FieldSeparator}%P${FieldSeparator}%cI${FieldSeparator}%s",
+    "main"
+  ]).try
+  let publications = parsePublications(merges)
+  return Ok([]) if publications.empty?
+  let commits = git(path, [
+    "log", "--no-walk=unsorted",
+    "--format=${RecordSeparator}%H${FieldSeparator}%aI${FieldSeparator}%B",
+    ...publications.map(&.sha)
+  ]).try
+  Ok(chirps(publications, commits))
+end
+
+# The publications in +git log+ output, skipping merges that changed files
+# and merges whose message is not one GitHub's merge button writes.
+#
+# @param output [String] +git log+ with one record per merge
+# @return [[Publication]] the merges that published a chirp
+parsePublications : String -> [Publication]
+let parsePublications(output) = output.split(RecordSeparator)
+  .flatMap { |entry| publication(entry).map { |p| [p] }.or([]) }
+
+# The chirp a merge published, or +None+ when the merge is not a chirp.
+#
+# @param entry [String] one merge's header line, then the files it changed
+# @return [Publication?] the publication
+publication : String -> Publication?
+let publication(entry) do
+  let lines = entry.lines.filter { |line| !line.trim.empty? }
+  return None if lines.count != 1
+  match lines.first.or("").split(FieldSeparator) do
+    [_, parents, publishedAt, subject] => match (pullRequest(subject), parents.split(" ")) do
+      (Just((number, login)), [_, sha]) =>
+        Just(Publication { number: number, login: login, sha: sha, publishedAt: publishedAt })
+      _ => None
+    end
+    _ => None
+  end
+end
+
+# The pull request number and the login of its author, out of the subject
+# GitHub gives a merge: +Merge pull request #42 from alice/branch+.
+#
+# @param subject [String] the merge commit's subject line
+# @return [(Integer, String)?] the number and login
+#
+# @example
+#   pullRequest("Merge pull request #42 from alice/hello")   # => Just((42, "alice"))
+#   pullRequest("Merge branch 'main'")                       # => None
+pullRequest : String -> (Integer, String)?
+let pullRequest(subject) do
+  let prefix = "Merge pull request #"
+  return None if !subject.startsWith?(prefix)
+  match subject.drop(prefix.count).split(" from ") do
+    [digits, head] => match (Integer.parse(digits), head.split("/")) do
+      (Ok(number), [login, _]) => login.empty? then None else Just((number, login))
+      _ => None
+    end
+    _ => None
+  end
+end
+
+# Splits a chirp's commit message into its text and its +In-Reply-To:+ SHA.
+#
+# @param message [String] the full commit message
+# @return [(String, String?)] the text, and the SHA it replies to
+#
+# @example
+#   message("hi\n\nIn-Reply-To: 3f9c2a1")   # => ("hi", Just("3f9c2a1"))
+message : String -> (String, String?)
+let message(text) do
+  let (trailers, body) = text.trim.lines.partition { |line| line.startsWith?(ReplyTrailer) }
+  let inReplyTo = trailers.first.map { |line| line.drop(ReplyTrailer.count).trim }
+  (body.join("\n").trim, inReplyTo)
+end
+
+private do
+  let RecordSeparator = "\u{1e}"
+  let FieldSeparator  = "\u{1f}"
+  let ReplyTrailer    = "In-Reply-To:"
+
+  foul git(path: String, args: [String]) -> String or! String do
+    let result = Process.run("git", ["-C", path, ...args]).try
+    return Error("git ${args.first.or("")}: ${result.stderr.trim}") if result.exitCode != 0
+    Ok(result.stdout)
+  end
+
+  let chirps(publications: [Publication], output: String) -> [Chirp] do
+    let entries = output.split(RecordSeparator).reject(&.empty?)
+    publications.zip(entries).flatMap { |pair| chirp(pair).map { |c| [c] }.or([]) }
+  end
+
+  chirp : (Publication, String) -> Chirp?
+  let chirp((published, entry)) do
+    match entry.split(FieldSeparator) do
+      [_, writtenAt, body] => do
+        let (text, inReplyTo) = message(body)
+        Just(Chirp {
+          number: published.number, sha: published.sha, login: published.login,
+          text: text, writtenAt: writtenAt, publishedAt: published.publishedAt,
+          inReplyTo: inReplyTo
+        })
+      end
+      _ => None
+    end
+  end
+end

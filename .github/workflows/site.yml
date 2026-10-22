@@ -1,0 +1,51 @@
+# Builds the static site from main's history and deploys it to GitHub Pages.
+# It runs after every publish (started by the publish workflow), after a
+# maintainer's push, and every 15 minutes so like counts stay fresh.
+name: Site
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ghcr.io/kexhq/kex:0.4.0-rc.2
+    steps:
+      - name: Install git and the GitHub CLI
+        run: apt-get update && apt-get install -y --no-install-recommends git gh
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the whole history: it is the timeline
+      - id: pages
+        uses: actions/configure-pages@v5
+      - name: Build
+        run: tey site --repository "$GITHUB_REPOSITORY" --base "$BASE" --out _site
+        env:
+          BASE: ${{ steps.pages.outputs.base_path }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

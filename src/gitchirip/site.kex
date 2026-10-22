@@ -1,0 +1,267 @@
+# Renders the timeline as a static site: one page for everyone's chirps, one
+# per person, and one per chirp with the replies it got.
+#
+#   out/index.html                   the newest chirps
+#   out/page/<n>/index.html          older chirps, a hundred to a page
+#   out/@<login>/index.html          a profile, with only that person's chirps
+#   out/@<login>/page/<n>/index.html their older chirps
+#   out/c/<number>/index.html        a chirp and its thread
+#
+# Pages are counted from the oldest chirp, not the newest: page 1 is the
+# first hundred chirps ever published. The timeline only grows at the new
+# end, so a page that has filled up never changes again, and a link to one
+# keeps showing the same chirps.
+#
+# Nothing here talks to git or GitHub. +render+ is handed what they said and
+# answers the pages as paths and HTML, so it can be tested on its own.
+module GitChirip.Site
+using GitChirip.GitHub, only: [Profile]
+using GitChirip.Timeline, only: [Chirp]
+using Regex
+
+# Where the site lives and what it is built from.
+record Settings do
+  # The path the site is served under: "" at a domain's root, or
+  # "/gitchirip-posts" for a project page on GitHub Pages.
+  base       : String = ""
+  # The timeline's +owner/name+ on GitHub, for pull request and commit links.
+  repository : String
+end
+
+# One chirp, prepared for a template.
+record Card do
+  number         : Integer
+  href           : String
+  login          : String
+  displayName    : String
+  avatar         : String
+  profileHref    : String
+  html           : String
+  publishedAt    : String
+  publishedLabel : String
+  likes          : Integer
+  replies        : Integer
+  pullUrl        : String
+  commitUrl      : String
+  shortSha       : String
+  replyToHref    : String = ""
+  replyToLogin   : String = ""
+end
+
+# A feed that is split into pages: everyone's chirps, or one person's.
+record Feed do
+  # Where its pages go: "" for the timeline, "@login/" for one person.
+  prefix : String
+  name   : String
+  # Newest first.
+  chirps : [Chirp]
+end
+
+# How many chirps a page holds.
+let PageSize = 100
+
+# Everything the pages are made from.
+record Network do
+  chirps   : [Chirp]
+  profiles : {String: Profile}
+  likes    : {Integer: Integer}
+end
+
+# Renders every page of the site.
+#
+# @param network [Network] the chirps, newest first, with profiles and likes
+# @param settings [Settings] where the site is served
+# @return [[(String, String)]] each page's path under the output directory,
+#   and its HTML
+render : Network -> Settings -> [(String, String)]
+let render(network, settings) do
+  let logins = network.chirps.map(&.login).uniq
+  let index = ("index.html", timelinePage(network, settings))
+  let archive = archivePages(network, settings, Feed { prefix: "", name: "Home", chirps: network.chirps })
+  let profiles = logins.flatMap { |login| profilePages(network, settings, login) }
+  let permalinks = network.chirps.map { |chirp| ("c/${chirp.number}/index.html", permalinkPage(network, settings, chirp)) }
+  [index, ...archive, ...profiles, ...permalinks]
+end
+
+# How many pages a feed of +total+ chirps fills.
+#
+# @param total [Integer] the number of chirps
+# @return [Integer] the number of pages
+#
+# @example
+#   pageCount(250)   # => 3
+#   pageCount(0)     # => 0
+pageCount : Integer -> Integer
+let pageCount(total) = (total + PageSize - 1) / PageSize
+
+# The chirps on page +number+ of +feed+, newest first.
+#
+# @param feed [[Chirp]] the whole feed, newest first
+# @param number [Integer] the page, where 1 holds the oldest chirps
+# @return [[Chirp]] that page's chirps
+pageOf : [Chirp] -> Integer -> [Chirp]
+let pageOf(feed, number) do
+  let newest = number * PageSize < feed.count then number * PageSize else feed.count
+  feed.drop(feed.count - newest).take(newest - (number - 1) * PageSize)
+end
+
+# The page to continue on after the newest +PageSize+ chirps of a feed of
+# +total+: the one holding the newest chirp they leave out, or +None+ when
+# they are all of it.
+#
+# @param total [Integer] the number of chirps in the feed
+# @return [Integer?] the page number
+#
+# @example
+#   olderThanNewest(250)   # => Just(2)
+#   olderThanNewest(80)    # => None
+olderThanNewest : Integer -> Integer?
+let olderThanNewest(total) = total > PageSize then Just((total - PageSize - 1) / PageSize + 1) else None
+
+# Turns a chirp's text into HTML: escaped, with links made live and
+# +@mentions+ pointing at the people they name.
+#
+# A mention of someone who has chirped goes to their profile here; anyone
+# else's goes to GitHub.
+#
+# @param text [String] the chirp as written
+# @param settings [Settings] where the site is served
+# @param known [[String]] the logins that have profiles on the site
+# @return [String] the HTML
+#
+# @example
+#   linkify("hi @octocat <3", Settings { repository: "o/r" }, ["octocat"])
+#   # => "hi <a href=\"/@octocat/\">@octocat</a> &lt;3"
+linkify : String -> Settings -> [String] -> String
+let linkify(text, settings, known) do
+  # The text is escaped first, so an address ends at an escaped quote or
+  # bracket as well as at whitespace.
+  let pattern = re`https?://(?:(?!&quot;|&#39;|&lt;|&gt;)\S)+|@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})`
+  let escaped = Template.escapeHtml(text)
+  Regex.replace(escaped, pattern) { |found| link(found.get(0).or(""), settings, known) }
+end
+
+private do
+  let link(token: String, settings: Settings, known: [String]) -> String do
+    return "<a href=\"${token}\" rel=\"nofollow noopener\">${token}</a>" if !token.startsWith?("@")
+    let login = token.drop(1)
+    let href = known.contains?(login) then "${settings.base}/@${login}/" else "https://github.com/${login}"
+    "<a href=\"${href}\">${token}</a>"
+  end
+
+  let timelinePage(network: Network, settings: Settings) -> String do
+    let timeline = Template.html(Kex.embed("../../views/timeline.html.ket"))
+    let cards = cardsHtml(network, settings, network.chirps.take(PageSize))
+    let older = olderHref(settings, "", olderThanNewest(network.chirps.count))
+    page(network, settings, "Home · GitChirip", timeline(network.chirps.count, cards, older))
+  end
+
+  let profilePages(network: Network, settings: Settings, login: String) -> [(String, String)] do
+    let own = network.chirps.filter { |chirp| chirp.login == login }
+    let name = profileOf(network, login).displayName
+    [("@${login}/index.html", profilePage(network, settings, login, own)),
+     ...archivePages(network, settings, Feed { prefix: "@${login}/", name: name, chirps: own })]
+  end
+
+  let profilePage(network: Network, settings: Settings, login: String, own: [Chirp]) -> String do
+    let profilePartial = Template.html(Kex.embed("../../views/profile.html.ket"))
+    let profile = profileOf(network, login)
+    let since = own.last.map { |chirp| chirp.publishedAt }.or("")
+    let cards = cardsHtml(network, settings, own.take(PageSize))
+    let older = olderHref(settings, "@${login}/", olderThanNewest(own.count))
+    let title = "${profile.displayName} (@${login}) · GitChirip"
+    let html = profilePartial(profile, profile.website.or(""), own.count, since, settings.base, cards, older)
+    page(network, settings, title, html)
+  end
+
+  # Every numbered page of +feed+.
+  let archivePages(network: Network, settings: Settings, feed: Feed) -> [(String, String)] do
+    let pages = pageCount(feed.chirps.count)
+    return [] if pages == 0
+    (1..pages).map { |number| archivePage(network, settings, feed, number) }
+  end
+
+  let archivePage(network: Network, settings: Settings, feed: Feed, number: Integer) -> (String, String) do
+    let archive = Template.html(Kex.embed("../../views/archive.html.ket"))
+    let cards = cardsHtml(network, settings, pageOf(feed.chirps, number))
+    let older = olderHref(settings, feed.prefix, number > 1 then Just(number - 1) else None)
+    let subtitle = "Page ${number} of ${pageCount(feed.chirps.count)}"
+    let html = archive(feed.name, subtitle, "${settings.base}/${feed.prefix}", cards, older)
+    let title = "${feed.name}, page ${number} · GitChirip"
+    ("${feed.prefix}page/${number}/index.html", page(network, settings, title, html))
+  end
+
+  let olderHref(settings: Settings, prefix: String, number: Integer?) -> String = number
+    .map { |n| "${settings.base}/${prefix}page/${n}/" }
+    .or("")
+
+  let cardsHtml(network: Network, settings: Settings, chirps: [Chirp]) -> String = chirps
+    .map { |chirp| chirpHtml(network, settings, chirp) }
+    .join("\n")
+
+  let permalinkPage(network: Network, settings: Settings, chirp: Chirp) -> String do
+    let permalink = Template.html(Kex.embed("../../views/permalink.html.ket"))
+    let parent = parentOf(network, chirp).map { |p| chirpHtml(network, settings, p) }.or("")
+    let replies = repliesTo(network, chirp).reverse
+      .map { |reply| chirpHtml(network, settings, reply) }
+      .join("\n")
+    let focus = card(network, settings, chirp)
+    let title = "${focus.displayName} on GitChirip: “${chirp.text.take(60)}”"
+    let html = permalink(settings.base, parent, focus, focus.likes, replies, chirp.sha.take(7))
+    page(network, settings, title, html)
+  end
+
+  let page(network: Network, settings: Settings, title: String, content: String) -> String do
+    let layout = Template.html(Kex.embed("../../views/layout.html.ket"))
+    layout(title, settings.base, settings.repository, people(network, settings)) { content }
+  end
+
+  # Everyone who has chirped, the most recently active first.
+  let people(network: Network, settings: Settings) -> String do
+    let person = Template.html(Kex.embed("../../views/person.html.ket"))
+    network.chirps.map(&.login).uniq.take(5)
+      .map { |login| person(profileOf(network, login), "${settings.base}/@${login}/") }
+      .join("\n")
+  end
+
+  let profileOf(network: Network, login: String) -> Profile = network.profiles.get(login)
+    .or(Profile { login: login })
+
+  let chirpHtml(network: Network, settings: Settings, chirp: Chirp) -> String do
+    let partial = Template.html(Kex.embed("../../views/chirp.html.ket"))
+    partial(card(network, settings, chirp))
+  end
+
+  let card(network: Network, settings: Settings, chirp: Chirp) -> Card do
+    let profile = profileOf(network, chirp.login)
+    let known = network.profiles.keys
+    let base = Card {
+      number: chirp.number,
+      href: "${settings.base}/c/${chirp.number}/",
+      login: chirp.login,
+      displayName: profile.displayName,
+      avatar: profile.avatar,
+      profileHref: "${settings.base}/@${chirp.login}/",
+      html: linkify(chirp.text, settings, known),
+      publishedAt: chirp.publishedAt,
+      publishedLabel: chirp.publishedAt.take(10),
+      likes: network.likes.get(chirp.number).or(0),
+      replies: repliesTo(network, chirp).count,
+      pullUrl: "https://github.com/${settings.repository}/pull/${chirp.number}",
+      commitUrl: "https://github.com/${settings.repository}/commit/${chirp.sha}",
+      shortSha: chirp.sha.take(7)
+    }
+    match parentOf(network, chirp) do
+      Just(parent) => Card {
+        ...base, replyToHref: "${settings.base}/c/${parent.number}/", replyToLogin: parent.login
+      }
+      None => base
+    end
+  end
+
+  let parentOf(network: Network, chirp: Chirp) -> Chirp? = chirp.inReplyTo
+    .flatMap { |sha| network.chirps.find { |other| other.sha.startsWith?(sha) } }
+
+  let repliesTo(network: Network, chirp: Chirp) -> [Chirp] = network.chirps
+    .filter { |other| other.inReplyTo.map { |sha| chirp.sha.startsWith?(sha) }.or(false) }
+end

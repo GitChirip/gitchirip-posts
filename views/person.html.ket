@@ -1,0 +1,8 @@
+---
+params: [profile: Profile, href: String]
+---
+<div class="person">
+  <a href="<%= href %>"><img class="avatar" src="<%= profile.avatar %>" alt="" width="40" height="40" loading="lazy"></a>
+  <a class="who" href="<%= href %>"><strong><%= profile.displayName %></strong><span>@<%= profile.login %></span></a>
+  <a class="pill dark small" href="<%= profile.url %>">Follow</a>
+</div>
