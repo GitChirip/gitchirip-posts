@@ -33,9 +33,13 @@ rescue |error|
   System.exit(1)
 end
 
-# The value after +name+ on the command line, if it was given.
+# The value after +name+ on the command line, if it was given. A flag right
+# after it is not its value: an empty value never reaches the program, so
+# `--base "" --out _site` arrives as `--base --out _site`.
 option : [String] -> String -> String?
-let option(args, name) = args.findIndex { |arg| arg == name }.flatMap { |index| args.get(index + 1) }
+let option(args, name) = args.findIndex { |arg| arg == name }
+  .flatMap { |index| args.get(index + 1) }
+  .flatMap { |value| value.startsWith?("--") then None else Just(value) }
 
 # Gathers what GitHub knows about the pull request.
 pullRequest : String -> String -> PullRequest or! String
