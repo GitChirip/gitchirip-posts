@@ -30,6 +30,9 @@ jobs:
       # pull_request_target checks out main, never the pull request: nothing
       # from a contributor's branch is run, only read through the API.
       - uses: actions/checkout@v4
+      # The checkout belongs to the runner's user, not the container's root.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Check and merge
         run: tey publish --repository "$GITHUB_REPOSITORY" --pull "$PULL"
         env:
